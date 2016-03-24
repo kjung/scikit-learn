@@ -61,7 +61,7 @@ cdef class Tree:
     cdef void _resize(self, SIZE_t capacity) except *
     cdef int _resize_c(self, SIZE_t capacity=*) nogil
 
-    cdef np.ndarray _get_value_ndarray(self)
+    cpdef np.ndarray _get_value_ndarray(self)
     cdef np.ndarray _get_node_ndarray(self)
 
     cpdef np.ndarray predict(self, object X)
@@ -100,3 +100,5 @@ cdef class TreeBuilder:
                 np.ndarray sample_weight=*,
                 np.ndarray X_idx_sorted=*)
     cdef _check_input(self, object X, np.ndarray y, np.ndarray sample_weight)
+
+
