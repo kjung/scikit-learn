@@ -77,7 +77,8 @@ cdef class PowersCriterion:
     cdef DOUBLE_t* w                     # Values of w
     cdef SIZE_t w_stride                 # Stride in w (since n_outputs >= 1)
     cdef DOUBLE_t* sample_weight         # Sample weights
-
+    cdef double sq_sum_total             # Maybe not necessary... 
+    
     cdef SIZE_t* samples                 # Sample indices in X, y
     cdef SIZE_t start                    # samples[start:pos] are the samples in the left node
     cdef SIZE_t pos                      # samples[pos:end] are the samples in the right node
@@ -89,6 +90,29 @@ cdef class PowersCriterion:
     cdef double weighted_n_node_samples  # Weighted number of samples in the node
     cdef double weighted_n_left          # Weighted number of samples in the left node
     cdef double weighted_n_right         # Weighted number of samples in the right node
+
+    cdef double left_treated_sum_y              # sum of outcomes in left branch, treated samples
+    cdef double left_control_sum_y              # sum of outcomes in left branch, control samples
+    cdef double right_treated_sum_y             # sum of outcomes in right branch, treated samples
+    cdef double right_control_sum_y             # sum of outcomes in right branch, control samples
+
+    cdef double left_treated_sum_sq_y           # sum of squared outcomes in left branch, treated samples
+    cdef double left_control_sum_sq_y           # sum of squared outcomes in left branch, control samples
+    cdef double right_treated_sum_sq_y          # sum of squared outcomes in right branch, treated samples
+    cdef double right_control_sum_sq_y          # sum of squared outcomes in right branch, control samples
+
+    cdef SIZE_t left_treated_n                  # number of treated samples in left branch
+    cdef SIZE_t right_treated_n                 # number of treated samples in right branch
+    cdef SIZE_t left_control_n                  # number of control samples in left branch
+    cdef SIZE_t right_control_n                 # number of control samples in right branch
+
+    cdef double treated_sum_y                   # Sum of y over all treated
+    cdef double control_sum_y                   # Sum of y over all control
+    cdef double treated_sum_sq_y                # Sum of y^2 over all treated
+    cdef double control_sum_sq_y                # Sum of y^2 over all control
+    cdef SIZE_t treated_n                       # Number of treated
+    cdef SIZE_t control_n                       # Number of control
+    
 
     cdef double* sum_total          # For classification criteria, the sum of the
                                     # weighted count of each label. For regression,
@@ -102,17 +126,18 @@ cdef class PowersCriterion:
     # statistics correspond to samples[start:pos] and samples[pos:end].
 
     # Methods
-    cdef void init(self, DOUBLE_t* y, SIZE_t y_stride, DOUBLE_t* w, SIZE_t w_strice, DOUBLE_t* sample_weight,
+    cdef void init(self, DOUBLE_t* y, SIZE_t y_stride, DOUBLE_t* w, SIZE_t w_stride, DOUBLE_t* sample_weight,
                    double weighted_n_samples, SIZE_t* samples, SIZE_t start,
                    SIZE_t end) nogil
     cdef void reset(self) nogil
     cdef void reverse_reset(self) nogil
     cdef void update(self, SIZE_t new_pos) nogil
-    cdef double node_impurity(self) nogil
-    cdef void children_impurity(self, double* impurity_left,
-                                double* impurity_right) nogil
+    #cdef double node_impurity(self) nogil
+    #cdef void children_impurity(self, double* impurity_left,
+    #                            double* impurity_right) nogil
+    #cdef double impurity_improvement(self, double impurity) nogil
+    #cdef double proxy_impurity_improvement(self) nogil
+    cdef double objective_improvement(self) nogil
     cdef void node_value(self, double* dest) nogil
-    cdef double impurity_improvement(self, double impurity) nogil
-    cdef double proxy_impurity_improvement(self) nogil
 
 
