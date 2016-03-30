@@ -1106,6 +1106,8 @@ cdef class PowersCriterion:
         self.sum_left = NULL
         self.sum_right = NULL
 
+        self.binary_outcome = 0
+
         # Allocate memory for the accumulators
         self.sum_total = <double*> calloc(n_outputs, sizeof(double))
         self.sum_left = <double*> calloc(n_outputs, sizeof(double))
@@ -1335,10 +1337,10 @@ cdef class PowersCriterion:
         self.pos = new_pos
 
 
-    cdef double objective_improvement(self) nogil:
-        """Evaluate the objective change given the current values of the sufficient
-           statistics."""
+    cpdef void set_binary_outcome(self, SIZE_t new_value):
+        self.binary_outcome = new_value
 
+    cdef double continuous_outcome_objective_improvement(self) nogil:
         # Calculate mean effect in left and right children.
         cdef double left_treated_mean_outcome = self.left_treated_sum_y / self.left_treated_n
         cdef double left_control_mean_outcome = self.left_control_sum_y / self.left_control_n
@@ -1346,106 +1348,47 @@ cdef class PowersCriterion:
         cdef double right_control_mean_outcome = self.right_control_sum_y / self.right_control_n
         cdef double left_tau = left_treated_mean_outcome - left_control_mean_outcome
         cdef double right_tau = right_treated_mean_outcome - right_control_mean_outcome
-
+        
         # Calculate std error of the means for the left and right children.
         cdef double left_treated_var = (self.left_treated_sum_sq_y / self.left_treated_n)  - square(left_treated_mean_outcome)
         cdef double left_control_var = (self.left_control_sum_sq_y / self.left_control_n)  - square(left_control_mean_outcome)
         cdef double right_treated_var = (self.right_treated_sum_sq_y / self.right_treated_n) - square(right_treated_mean_outcome)
         cdef double right_control_var = (self.right_control_sum_sq_y / self.right_control_n) - square(right_control_mean_outcome)
-        cdef double left_sem = sqrt(left_treated_var / self.left_treated_n) + sqrt(left_control_var / self.left_control_n)
-        cdef double right_sem = sqrt(right_treated_var / self.right_treated_n) + sqrt(right_control_var / self.right_control_n)
+        cdef double left_sem = sqrt((left_treated_var / self.left_treated_n) + (left_control_var / self.left_control_n))
+        cdef double right_sem = sqrt((right_treated_var / self.right_treated_n) + (right_control_var / self.right_control_n))
+        cdef double numerator = fabs(right_tau - left_tau)
+        cdef double denominator = sqrt(square(left_sem) + square(right_sem))
+        return (numerator / denominator)
+    
+    cdef double binary_outcome_objective_improvement(self) nogil: 
+        # TODO - what do we do about probs being 0 b/c no observed positive outcomes?  
+        # Calculate mean effect in left and right children.
+        cdef double left_treated_prob = self.left_treated_sum_y / self.left_treated_n
+        cdef double left_control_prob = self.left_control_sum_y / self.left_control_n
+        cdef double right_treated_prob = self.right_treated_sum_y / self.right_treated_n
+        cdef double right_control_prob = self.right_control_sum_y / self.right_control_n
+        cdef double left_tau = left_treated_prob - left_control_prob
+        cdef double right_tau = right_treated_prob - right_control_prob
+    
+        # Calculate std error of the means for the left and right children.
+        cdef double left_treated_var = left_treated_prob * (1 - left_treated_prob)
+        cdef double left_control_var = left_control_prob * (1 - left_control_prob)
+        cdef double right_treated_var = right_treated_prob * (1 - right_treated_prob)
+        cdef double right_control_var = right_control_prob * (1 - right_control_prob)
+        cdef double left_sem = sqrt((left_treated_var / self.left_treated_n) + (left_control_var / self.left_control_n))
+        cdef double right_sem = sqrt((right_treated_var / self.right_treated_n) + (right_control_var / self.right_control_n))
         cdef double numerator = fabs(right_tau - left_tau)
         cdef double denominator = sqrt(square(left_sem) + square(right_sem))
         return (numerator / denominator)
 
+    cdef double objective_improvement(self) nogil:
+        """Evaluate the objective change given the current values of the sufficient
+           statistics."""
 
-        
-    # cdef double node_impurity(self) nogil:
-    #     """Evaluate the impurity of the current node, i.e. the impurity of
-    #        samples[start:end]."""
-
-    #     cdef double* sum_total = self.sum_total
-    #     cdef double impurity
-    #     cdef SIZE_t k
-
-    #     impurity = self.sq_sum_total / self.weighted_n_node_samples
-    #     for k in range(self.n_outputs):
-    #         impurity -= (sum_total[k] / self.weighted_n_node_samples)**2.0
-
-    #     return impurity / self.n_outputs
-
-    # cdef double proxy_impurity_improvement(self) nogil:
-    #     """Compute a proxy of the impurity reduction
-
-    #     This method is used to speed up the search for the best split.
-    #     It is a proxy quantity such that the split that maximizes this value
-    #     also maximizes the impurity improvement. It neglects all constant terms
-    #     of the impurity decrease for a given split.
-
-    #     The absolute impurity improvement is only computed by the
-    #     impurity_improvement method once the best split has been found.
-    #     """
-
-    #     cdef double* sum_left = self.sum_left
-    #     cdef double* sum_right = self.sum_right
-
-    #     cdef SIZE_t k
-    #     cdef double proxy_impurity_left = 0.0
-    #     cdef double proxy_impurity_right = 0.0
-
-    #     for k in range(self.n_outputs):
-    #         proxy_impurity_left += sum_left[k] * sum_left[k]
-    #         proxy_impurity_right += sum_right[k] * sum_right[k]
-
-    #     return (proxy_impurity_left / self.weighted_n_left +
-    #             proxy_impurity_right / self.weighted_n_right)
-
-    # cdef void children_impurity(self, double* impurity_left,
-    #                             double* impurity_right) nogil:
-    #     """Evaluate the impurity in children nodes, i.e. the impurity of the
-    #        left child (samples[start:pos]) and the impurity the right child
-    #        (samples[pos:end])."""
-
-
-    #     cdef DOUBLE_t* y = self.y
-    #     cdef DOUBLE_t* sample_weight = self.sample_weight
-    #     cdef SIZE_t* samples = self.samples
-    #     cdef SIZE_t pos = self.pos
-    #     cdef SIZE_t start = self.start
-
-    #     cdef double* sum_left = self.sum_left
-    #     cdef double* sum_right = self.sum_right
-
-    #     cdef double sq_sum_left = 0.0
-    #     cdef double sq_sum_right
-
-    #     cdef SIZE_t i
-    #     cdef SIZE_t p
-    #     cdef SIZE_t k
-    #     cdef DOUBLE_t w = 1.0
-    #     cdef DOUBLE_t y_ik
-
-    #     for p in range(start, pos):
-    #         i = samples[p]
-
-    #         if sample_weight != NULL:
-    #             w = sample_weight[i]
-
-    #         for k in range(self.n_outputs):
-    #             y_ik = y[i * self.y_stride + k]
-    #             sq_sum_left += w * y_ik * y_ik
-
-    #     sq_sum_right = self.sq_sum_total - sq_sum_left
-
-    #     impurity_left[0] = sq_sum_left / self.weighted_n_left
-    #     impurity_right[0] = sq_sum_right / self.weighted_n_right
-
-    #     for k in range(self.n_outputs):
-    #         impurity_left[0] -= (sum_left[k] / self.weighted_n_left) ** 2.0
-    #         impurity_right[0] -= (sum_right[k] / self.weighted_n_right) ** 2.0 
-
-    #     impurity_left[0] /= self.n_outputs
-    #     impurity_right[0] /= self.n_outputs
+        if self.binary_outcome == 0 :
+            return self.continuous_outcome_objective_improvement()
+        else :
+            return self.binary_outcome_objective_improvement()
 
     cdef void node_value(self, double* dest) nogil:
         """Compute the node value of samples[start:end] into dest.
@@ -1458,37 +1401,3 @@ cdef class PowersCriterion:
         for k in range(self.n_outputs):
             dest[k] = self.sum_total[k] / self.weighted_n_node_samples
             
-    # cdef double impurity_improvement(self, double impurity) nogil:
-    #     """Placeholder for improvement in impurity after a split.
-
-    #     Placeholder for a method which computes the improvement
-    #     in impurity when a split occurs. The weighted impurity improvement
-    #     equation is the following:
-
-    #         N_t / N * (impurity - N_t_R / N_t * right_impurity
-    #                             - N_t_L / N_t * left_impurity)
-
-    #     where N is the total number of samples, N_t is the number of samples
-    #     at the current node, N_t_L is the number of samples in the left child,
-    #     and N_t_R is the number of samples in the right child,
-
-    #     Parameters
-    #     ----------
-    #     impurity: double
-    #         The initial impurity of the node before the split
-
-    #     Return
-    #     ------
-    #     double: improvement in impurity after the split occurs
-    #     """
-
-    #     cdef double impurity_left
-    #     cdef double impurity_right
-
-    #     self.children_impurity(&impurity_left, &impurity_right)
-
-    #     return ((self.weighted_n_node_samples / self.weighted_n_samples) *
-    #             (impurity - (self.weighted_n_right / 
-    #                          self.weighted_n_node_samples * impurity_right)
-    #                       - (self.weighted_n_left / 
-    #                          self.weighted_n_node_samples * impurity_left)))

@@ -1940,7 +1940,7 @@ class PowersTree(BaseDecisionTree, ClassifierMixin):
             w = np.ascontiguousarray(w, dtype=DOUBLE)
         if getattr(y, "dtype", None) != DOUBLE or not y.flags.contiguous:
             y = np.ascontiguousarray(y, dtype=DOUBLE)
-
+        
         # Check parameters
         max_depth = ((2 ** 31) - 1 if self.max_depth is None
                      else self.max_depth)
@@ -2071,6 +2071,10 @@ class PowersTree(BaseDecisionTree, ClassifierMixin):
 
         # Build tree
         criterion = PowersCriterion()
+        if np.unique(y).shape[0] == 2 :
+            criterion.set_binary_outcome(1)            
+        else :
+            criterion.set_binary_outcome(0)            
         splitter = PowersSplitter(criterion,
                                   self.max_features_,
                                   min_samples_leaf,

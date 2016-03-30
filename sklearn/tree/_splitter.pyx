@@ -2072,7 +2072,7 @@ cdef class PowersSplitter:
                             self.weighted_n_samples,
                             self.samples,
                             start,
-                            end)
+                            end) 
         weighted_n_node_samples[0] = self.criterion.weighted_n_node_samples
 
     cdef INT32_t min_class_count(self, SIZE_t start, SIZE_t end) nogil:

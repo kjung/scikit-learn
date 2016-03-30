@@ -113,7 +113,8 @@ cdef class PowersCriterion:
     cdef SIZE_t treated_n                       # Number of treated
     cdef SIZE_t control_n                       # Number of control
     
-
+    cdef SIZE_t binary_outcome                  # 1 if the outcome is binary, 0 otherwise.  
+    
     cdef double* sum_total          # For classification criteria, the sum of the
                                     # weighted count of each label. For regression,
                                     # the sum of w*y. sum_total[k] is equal to
@@ -132,11 +133,10 @@ cdef class PowersCriterion:
     cdef void reset(self) nogil
     cdef void reverse_reset(self) nogil
     cdef void update(self, SIZE_t new_pos) nogil
-    #cdef double node_impurity(self) nogil
-    #cdef void children_impurity(self, double* impurity_left,
-    #                            double* impurity_right) nogil
-    #cdef double impurity_improvement(self, double impurity) nogil
-    #cdef double proxy_impurity_improvement(self) nogil
+    
+    cpdef void set_binary_outcome(self, SIZE_t new_value) 
+    cdef double continuous_outcome_objective_improvement(self) nogil
+    cdef double binary_outcome_objective_improvement(self) nogil    
     cdef double objective_improvement(self) nogil
     cdef void node_value(self, double* dest) nogil
 
