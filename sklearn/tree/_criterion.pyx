@@ -1031,6 +1031,12 @@ cdef class FriedmanMSE(MSE):
 cdef inline double square(double x) nogil:
     return x*x
 
+cdef inline double minvalue(double x, double y) nogil:
+    if (x < y) :
+        return x
+    else :
+        return y
+
 cdef class PowersCriterion:
     """Interface for Scott Powers' split criteria for causal trees. 
 
@@ -1336,7 +1342,8 @@ cdef class PowersCriterion:
             
         self.pos = new_pos
 
-
+    # Note - the price of using cpdef so we can set this in tree.py is that we can't parallelize this.
+    # But this can't possibly be a significant factor, right?  
     cpdef void set_binary_outcome(self, SIZE_t new_value):
         self.binary_outcome = new_value
 
@@ -1361,12 +1368,13 @@ cdef class PowersCriterion:
         return (numerator / denominator)
     
     cdef double binary_outcome_objective_improvement(self) nogil: 
-        # TODO - what do we do about probs being 0 b/c no observed positive outcomes?  
+        # TODO - what do we do about probs being 0 b/c no observed positive outcomes?
+        # Right now, we are putting a floor and ceiling on the estimated probs so they are in [0.01, 0.99]...  
         # Calculate mean effect in left and right children.
-        cdef double left_treated_prob = self.left_treated_sum_y / self.left_treated_n
-        cdef double left_control_prob = self.left_control_sum_y / self.left_control_n
-        cdef double right_treated_prob = self.right_treated_sum_y / self.right_treated_n
-        cdef double right_control_prob = self.right_control_sum_y / self.right_control_n
+        cdef double left_treated_prob = minvalue((self.left_treated_sum_y / self.left_treated_n) + 0.01, 0.99)
+        cdef double left_control_prob = minvalue((self.left_control_sum_y / self.left_control_n) + 0.01, 0.99)
+        cdef double right_treated_prob = minvalue((self.right_treated_sum_y / self.right_treated_n) + 0.01, 0.99)
+        cdef double right_control_prob = minvalue((self.right_control_sum_y / self.right_control_n) + 0.01, 0.99)
         cdef double left_tau = left_treated_prob - left_control_prob
         cdef double right_tau = right_treated_prob - right_control_prob
     
