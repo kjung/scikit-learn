@@ -2057,6 +2057,26 @@ class PropensityForest(ForestClassifier):
 
         return effects
         
+    def predict_outcomes(self, X) : 
+        # Check data
+        X = self._validate_X_predict(X)
+
+        # Assign chunk of trees to jobs
+        n_jobs, _, _ = _partition_estimators(self.n_estimators, self.n_jobs)
+
+        # Parallel loop
+        all_effects = Parallel(n_jobs=n_jobs, verbose=self.verbose,
+                             backend="threading")(
+            delayed(_parallel_helper)(e, 'predict_outcomes', X)
+            for e in self.estimators_)
+
+        # Reduce - use mean outcome estimate in each group over all estimators.  
+        effects = all_effects[0]
+        for j in range(1, len(all_effects)):
+            effects += all_effects[j]
+        effects /= len(self.estimators_)
+
+        return effects
 
 
 
@@ -2407,3 +2427,23 @@ class PowersForest(ForestClassifier):
 
         return effects
         
+    def predict_outcomes(self, X) : 
+        # Check data
+        X = self._validate_X_predict(X)
+
+        # Assign chunk of trees to jobs
+        n_jobs, _, _ = _partition_estimators(self.n_estimators, self.n_jobs)
+
+        # Parallel loop
+        all_effects = Parallel(n_jobs=n_jobs, verbose=self.verbose,
+                             backend="threading")(
+            delayed(_parallel_helper)(e, 'predict_outcomes', X)
+            for e in self.estimators_)
+
+        # Reduce - use mean outcome estimate in each group over all estimators.  
+        effects = all_effects[0]
+        for j in range(1, len(all_effects)):
+            effects += all_effects[j]
+        effects /= len(self.estimators_)
+
+        return effects

@@ -1509,6 +1509,14 @@ class PropensityTree(BaseDecisionTree, ClassifierMixin):
         nodes = self.apply(X)
         return np.take(self.effect_estimates, nodes)
 
+    def predict_outcomes(self, X) :
+        """Predict the outcomes for treated and untreated for each sample in X;
+           return as 2 column array."""
+        nodes = self.apply(X)
+        tx_outcomes = np.take(self.treated_mean_y, nodes)
+        ctl_outcomes = np.take(self.control_mean_y, nodes)
+        return np.transpose(np.matrix([tx_outcomes, ctl_outcomes]))
+
     # NB - the predict method here overrides the predict method from the base class, BaseDecisionTree.
     # Basically, we just use apply and get the (precomputed) tx effects for each of the leaf nodes.  
     def predict(self, X, check_input=True):
@@ -2140,6 +2148,14 @@ class PowersTree(BaseDecisionTree, ClassifierMixin):
         """
         nodes = self.apply(X)
         return np.take(self.effect_estimates, nodes)
+
+    def predict_outcomes(self, X) :
+        """Predict the outcomes for treated and untreated for each sample in X;
+           return as 2 column array."""
+        nodes = self.apply(X)
+        tx_outcomes = np.take(self.treated_mean_y, nodes)
+        ctl_outcomes = np.take(self.control_mean_y, nodes)
+        return np.transpose(np.matrix([tx_outcomes, ctl_outcomes]))
 
     # NB - the predict method here overrides the predict method from the base class, BaseDecisionTree.
     # Basically, we just use apply and get the (precomputed) tx effects for each of the leaf nodes.  
