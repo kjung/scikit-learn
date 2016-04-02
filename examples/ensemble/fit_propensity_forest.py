@@ -32,7 +32,11 @@ print "Fitting Propensity Trees..."
 pf.fit(X=train_X, y=train_y, w=train_w)
 
 print "Applying to test set..."
-estimates = pf.predict_effect(X=test_X)
+# Returns vector of mean((treated outcomes) - (control outcomes))
+#estimates = pf.predict_effect(X=test_X)
+# Returns matrix of [mean(treated outcomes), mean(control outcomes)]
+estimates = pf.predict_outcomes(X=test_X)
+
 
 np.savetxt(fname=output_file,
            X=estimates,
