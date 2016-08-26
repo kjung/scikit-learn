@@ -38,6 +38,7 @@ from ._utils cimport PriorityHeapRecord
 from ._utils cimport safe_realloc
 from ._utils cimport sizet_ptr_to_ndarray
 from ._splitter cimport PowersSplitter
+from ._splitter cimport VarianceSplitter
 
 cdef extern from "numpy/arrayobject.h":
     object PyArray_NewFromDescr(object subtype, np.dtype descr,
@@ -1424,3 +1425,181 @@ cdef class PowersTreeBuilder:
                 tree.max_depth = max_depth_seen
         if rc == -1:
             raise MemoryError()
+
+cdef class DoubleSampleTreeBuilder:
+    """Interface for depth first tree building strategies
+       using variance split criterion for Wager & Athey double
+       sample trees. 
+       TODO - get rid of calls to node_impurity, etc, etc...  
+    """
+
+    def __cinit__(self, VarianceSplitter splitter, SIZE_t min_samples_split,
+                  SIZE_t min_samples_leaf, double min_weight_leaf,
+                  SIZE_t max_depth):
+        self.splitter = splitter
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.min_weight_leaf = min_weight_leaf
+        self.max_depth = max_depth
+
+
+    cdef inline _check_input(self, object X, np.ndarray y, np.ndarray w, 
+                             np.ndarray sample_weight):
+        """Check input dtype, layout and format"""
+        if issparse(X):
+            X = X.tocsc()
+            X.sort_indices()
+
+            if X.data.dtype != DTYPE:
+                X.data = np.ascontiguousarray(X.data, dtype=DTYPE)
+
+            if X.indices.dtype != np.int32 or X.indptr.dtype != np.int32:
+                raise ValueError("No support for np.int64 index based "
+                                 "sparse matrices")
+
+        elif X.dtype != DTYPE:
+            # since we have to copy we will make it fortran for efficiency
+            X = np.asfortranarray(X, dtype=DTYPE)
+
+        if y.dtype != DOUBLE or not y.flags.contiguous:
+            y = np.ascontiguousarray(y, dtype=DOUBLE)            
+        if w.dtype != DOUBLE or not w.flags.contiguous:
+            w = np.ascontiguousarray(w, dtype=DOUBLE)            
+
+        if (sample_weight is not None and
+            (sample_weight.dtype != DOUBLE or
+            not sample_weight.flags.contiguous)):
+                sample_weight = np.asarray(sample_weight, dtype=DOUBLE,
+                                           order="C")
+
+        return X, y, w, sample_weight
+
+
+    cpdef build(self, Tree tree, object X, np.ndarray y,
+                np.ndarray w, 
+                np.ndarray sample_weight=None,
+                np.ndarray X_idx_sorted=None):
+        """Build a decision tree from the training set (X, y)."""
+
+        # check input
+        X, y, w, sample_weight = self._check_input(X, y, w, sample_weight)
+
+        cdef DOUBLE_t* sample_weight_ptr = NULL
+        if sample_weight is not None:
+            sample_weight_ptr = <DOUBLE_t*> sample_weight.data
+
+        # Initial capacity
+        cdef int init_capacity
+
+        if tree.max_depth <= 10:
+            init_capacity = (2 ** (tree.max_depth + 1)) - 1
+        else:
+            init_capacity = 2047
+
+        tree._resize(init_capacity)
+
+        # Parameters
+        cdef VarianceSplitter splitter = self.splitter
+        cdef SIZE_t max_depth = self.max_depth
+        cdef SIZE_t min_samples_leaf = self.min_samples_leaf
+        cdef double min_weight_leaf = self.min_weight_leaf
+        cdef SIZE_t min_samples_split = self.min_samples_split
+
+        # Recursive partition (without actual recursion)
+        # We have to init the splitter with the treatment indicators w...
+        splitter.init(X, y, w, sample_weight_ptr, X_idx_sorted)
+
+        cdef SIZE_t start
+        cdef SIZE_t end
+        cdef SIZE_t depth
+        cdef SIZE_t parent
+        cdef bint is_left
+        cdef SIZE_t n_node_samples = splitter.n_samples
+        cdef double weighted_n_samples = splitter.weighted_n_samples
+        cdef double weighted_n_node_samples
+        cdef SplitRecord split
+        cdef SIZE_t node_id
+
+        cdef double threshold
+        cdef double impurity = INFINITY
+        cdef SIZE_t n_constant_features
+        cdef bint is_leaf
+        cdef bint first = 1
+        cdef SIZE_t max_depth_seen = -1
+        cdef int rc = 0
+
+        cdef Stack stack = Stack(INITIAL_STACK_SIZE)
+        cdef StackRecord stack_record
+
+        # push root node onto stack
+        rc = stack.push(0, n_node_samples, 0, _TREE_UNDEFINED, 0, INFINITY, 0)
+        if rc == -1:
+            # got return code -1 - out-of-memory
+            raise MemoryError()
+
+        with nogil:
+            while not stack.is_empty():
+                stack.pop(&stack_record)
+                start = stack_record.start
+                end = stack_record.end
+                depth = stack_record.depth
+                parent = stack_record.parent
+                is_left = stack_record.is_left
+                # impurity = stack_record.impurity
+                n_constant_features = stack_record.n_constant_features
+
+                n_node_samples = end - start
+                splitter.node_reset(start, end, &weighted_n_node_samples)
+
+                is_leaf = ((depth >= max_depth) or
+                           (n_node_samples < min_samples_split) or
+                           (n_node_samples < 2 * min_samples_leaf) or
+                           (weighted_n_node_samples < min_weight_leaf))
+
+                # TODO - get rid of call to node_impurity; figure out how to
+                # adjust this to not have node impurity  at all!  
+                # if first:
+                #     impurity = splitter.node_impurity()
+                #     first = 0
+                #
+                # is_leaf = is_leaf or (impurity <= MIN_IMPURITY_SPLIT)
+
+                if not is_leaf:
+                    splitter.node_split(&split, &n_constant_features)
+                    is_leaf = is_leaf or (split.pos >= end)
+
+                node_id = tree._add_node(parent, is_left, is_leaf, split.feature,
+                                         split.threshold, 0.0, n_node_samples,
+                                         weighted_n_node_samples)
+
+                if node_id == <SIZE_t>(-1):
+                    rc = -1
+                    break
+
+                # Store value for all nodes, to facilitate tree/model
+                # inspection and interpretation
+                splitter.node_value(tree.value + node_id * tree.value_stride)
+                if not is_leaf:
+                    # Push right child on stack
+                    rc = stack.push(split.pos, end, depth + 1, node_id, 0,
+                                    0.0, n_constant_features)
+                    if rc == -1:
+                        break
+
+                    # Push left child on stack
+                    rc = stack.push(start, split.pos, depth + 1, node_id, 1,
+                                    0.0, n_constant_features)
+                    if rc == -1:
+                        break
+
+                if depth > max_depth_seen:
+                    max_depth_seen = depth
+
+            if rc >= 0:
+                rc = tree._resize_c(tree.node_count)
+
+            if rc >= 0:
+                tree.max_depth = max_depth_seen
+        if rc == -1:
+            raise MemoryError()
+        

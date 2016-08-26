@@ -20,6 +20,7 @@ ctypedef np.npy_uint32 UINT32_t          # Unsigned 32 bit integer
 
 from ._splitter cimport Splitter
 from ._splitter cimport PowersSplitter
+from ._splitter cimport VarianceSplitter
 from ._splitter cimport SplitRecord
 
 cdef struct Node:
@@ -111,6 +112,27 @@ cdef class PowersTreeBuilder:
     # using a PowersSplitter object for splitting internal nodes. 
 
     cdef PowersSplitter splitter          # Splitting algorithm
+
+    cdef SIZE_t min_samples_split   # Minimum number of samples in an internal node
+    cdef SIZE_t min_samples_leaf    # Minimum number of samples in a leaf
+    cdef double min_weight_leaf     # Minimum weight in a leaf
+    cdef SIZE_t max_depth           # Maximal tree depth
+
+    cpdef build(self, Tree tree, object X, np.ndarray y,
+    	  	np.ndarray w, 
+                np.ndarray sample_weight=*,
+                np.ndarray X_idx_sorted=*)
+    cdef _check_input(self, object X, np.ndarray y, np.ndarray w, np.ndarray sample_weight)
+
+
+#================================================================================
+# Double Sample Tree Builder
+#================================================================================
+cdef class DoubleSampleTreeBuilder:
+    # The DoubleSampleTreeBuilder recursively builds a Tree object from training samples,
+    # using a VarianceSplitter object for splitting internal nodes. 
+
+    cdef VarianceSplitter splitter          # Splitting algorithm
 
     cdef SIZE_t min_samples_split   # Minimum number of samples in an internal node
     cdef SIZE_t min_samples_leaf    # Minimum number of samples in a leaf

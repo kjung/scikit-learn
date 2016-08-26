@@ -141,3 +141,70 @@ cdef class PowersCriterion:
     cdef void node_value(self, double* dest) nogil
 
 
+cdef class VarianceCriterion:
+    # impurity of a split on that node. It also computes the output statistics
+    # such as the mean in regression and class probabilities in classification.
+
+    # Internal structures
+    cdef DOUBLE_t* y                     # Values of y
+    cdef SIZE_t y_stride                 # Stride in y (since n_outputs >= 1)
+    cdef DOUBLE_t* w                     # Values of w
+    cdef SIZE_t w_stride                 # Stride in w (since n_outputs >= 1)
+    cdef DOUBLE_t* sample_weight         # Sample weights
+    cdef double sq_sum_total             # Maybe not necessary... 
+    
+    cdef SIZE_t* samples                 # Sample indices in X, y
+    cdef SIZE_t start                    # samples[start:pos] are the samples in the left node
+    cdef SIZE_t pos                      # samples[pos:end] are the samples in the right node
+    cdef SIZE_t end
+
+    cdef SIZE_t n_outputs                # Number of outputs
+    cdef SIZE_t n_node_samples           # Number of samples in the node (end-start)
+    cdef double weighted_n_samples       # Weighted number of samples (in total)
+    cdef double weighted_n_node_samples  # Weighted number of samples in the node
+    cdef double weighted_n_left          # Weighted number of samples in the left node
+    cdef double weighted_n_right         # Weighted number of samples in the right node
+
+    cdef double left_treated_sum_y              # sum of outcomes in left branch, treated samples
+    cdef double left_control_sum_y              # sum of outcomes in left branch, control samples
+    cdef double right_treated_sum_y             # sum of outcomes in right branch, treated samples
+    cdef double right_control_sum_y             # sum of outcomes in right branch, control samples
+
+    cdef SIZE_t left_treated_n                  # number of treated samples in left branch
+    cdef SIZE_t right_treated_n                 # number of treated samples in right branch
+    cdef SIZE_t left_control_n                  # number of control samples in left branch
+    cdef SIZE_t right_control_n                 # number of control samples in right branch
+
+    cdef double treated_sum_y                   # Sum of y over all treated
+    cdef double control_sum_y                   # Sum of y over all control
+    cdef SIZE_t treated_n                       # Number of treated
+    cdef SIZE_t control_n                       # Number of control
+
+    cdef SIZE_t binary_outcome                  # 1 if the outcome is binary, 0 otherwise.  
+    
+    cdef double* sum_total          # For classification criteria, the sum of the
+                                    # weighted count of each label. For regression,
+                                    # the sum of w*y. sum_total[k] is equal to
+                                    # sum_{i=start}^{end-1} w[samples[i]]*y[samples[i], k],
+                                    # where k is output index. 
+    cdef double* sum_left           # Same as above, but for the left side of the split
+    cdef double* sum_right          # same as above, but for the right side of the split
+
+    # The criterion object is maintained such that left and right collected
+    # statistics correspond to samples[start:pos] and samples[pos:end].
+
+    # Methods
+    cdef void init(self, DOUBLE_t* y, SIZE_t y_stride, DOUBLE_t* w, SIZE_t w_stride, DOUBLE_t* sample_weight,
+                   double weighted_n_samples, SIZE_t* samples, SIZE_t start,
+                   SIZE_t end) nogil
+    cdef void reset(self) nogil
+    cdef void reverse_reset(self) nogil
+    cdef void update(self, SIZE_t new_pos) nogil
+    
+    cpdef void set_binary_outcome(self, SIZE_t new_value) 
+    cdef double continuous_outcome_objective_improvement(self) nogil
+    cdef double binary_outcome_objective_improvement(self) nogil    
+    cdef double objective_improvement(self) nogil
+    cdef void node_value(self, double* dest) nogil
+
+
