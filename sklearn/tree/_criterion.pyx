@@ -1036,6 +1036,11 @@ cdef inline double minvalue(double x, double y) nogil:
         return x
     else :
         return y
+cdef inline double maxvalue(double x, double y) nogil:
+    if (x < y) :
+        return y
+    else :
+        return x
 
 cdef class PowersCriterion:
     """Interface for Scott Powers' split criteria for causal trees. 
@@ -1371,7 +1376,7 @@ cdef class PowersCriterion:
         # TODO - what do we do about probs being 0 b/c no observed positive outcomes?
         # Right now, we are putting a floor and ceiling on the estimated probs so they are in [0.01, 0.99]...  
         # Calculate mean effect in left and right children.
-        cdef double left_treated_prob = minvalue((self.left_treated_sum_y / self.left_treated_n) + 0.01, 0.99)
+        cdef double left_treated_prob = minvalue(maxvalue((self.left_treated_sum_y / self.left_treated_n), 0.01), 0.99)
         cdef double left_control_prob = minvalue((self.left_control_sum_y / self.left_control_n) + 0.01, 0.99)
         cdef double right_treated_prob = minvalue((self.right_treated_sum_y / self.right_treated_n) + 0.01, 0.99)
         cdef double right_control_prob = minvalue((self.right_control_sum_y / self.right_control_n) + 0.01, 0.99)
@@ -1455,6 +1460,7 @@ cdef class VarianceCriterion:
         self.start = 0
         self.pos = 0
         self.end = 0
+        self.split_indices = NULL
 
         cdef SIZE_t n_outputs = 1
         self.n_outputs = 1
@@ -1497,7 +1503,7 @@ cdef class VarianceCriterion:
     cdef void init(self, DOUBLE_t* y, SIZE_t y_stride,
                    DOUBLE_t* w, SIZE_t w_stride, DOUBLE_t* sample_weight,
                    double weighted_n_samples, SIZE_t* samples, SIZE_t start,
-                   SIZE_t end) nogil:
+                   SIZE_t end, SIZE_t* split_indices) nogil:
         """Initialize the criterion at node samples[start:end] and
            children samples[start:start] and samples[start:end]."""
         # Initialize fields
@@ -1509,6 +1515,7 @@ cdef class VarianceCriterion:
         self.samples = samples
         self.start = start
         self.end = end
+        self.split_indices = split_indices
         self.n_node_samples = end - start
         self.weighted_n_samples = weighted_n_samples
         self.weighted_n_node_samples = 0.
@@ -1534,8 +1541,6 @@ cdef class VarianceCriterion:
 
         self.treated_sum_y = 0.0
         self.control_sum_y = 0.0
-        self.treated_sum_sq_y = 0.0
-        self.control_sum_sq_y = 0.0
         self.treated_n = 0
         self.control_n = 0
 
@@ -1544,26 +1549,27 @@ cdef class VarianceCriterion:
             # i is index into y and w...  
             i = samples[p]
 
-            if w[i] == 0 : 
-                self.control_sum_y += y[i*y_stride]
-                self.control_n += 1
-            else :
-                self.treated_sum_y += y[i*y_stride]
-                self.treated_n += 1
-        
-            if sample_weight != NULL:
-                weight = sample_weight[i]
-
-            for k in range(self.n_outputs):
-                y_ik = y[i * y_stride + k]
-                w_y_ik = weight * y_ik
-                self.sum_total[k] += w_y_ik
-
-            self.weighted_n_node_samples += weight
+            # If self.split_indices[i] == 1, we use the sample...  
+            if self.split_indices[i] == 1 : 
+                if w[i] == 0 : 
+                    self.control_sum_y += y[i*y_stride]
+                    self.control_n += 1
+                else :
+                    self.treated_sum_y += y[i*y_stride]
+                    self.treated_n += 1
+                    
+                if sample_weight != NULL:
+                    weight = sample_weight[i]
+                        
+                for k in range(self.n_outputs):
+                    y_ik = y[i * y_stride + k]
+                    w_y_ik = weight * y_ik
+                    self.sum_total[k] += w_y_ik
+                self.weighted_n_node_samples += weight
 
         # Reset to pos=start
         self.reset()
-
+        
     cdef void reset(self) nogil:
         """Reset the criterion at pos=start."""
         cdef SIZE_t n_bytes = self.n_outputs * sizeof(double)
@@ -1637,53 +1643,59 @@ cdef class VarianceCriterion:
             for p in range(pos, new_pos):
                 i = samples[p]
 
-                # We want to add things from pos to new_pos to the left child...
-                if self.w[i] == 0 :
-                    self.left_control_sum_y += y[i]
-                    self.left_control_n += 1
-                else :
-                    self.left_treated_sum_y += y[i]
-                    self.left_treated_n += 1
+                if self.split_indices[i] == 1 : 
+        
+                    # We want to add things from pos to new_pos to the left child
+                    # and take away from the right child...  
+                    if self.w[i] == 0 :
+                        self.left_control_sum_y += y[i]
+                        self.left_control_n += 1
+                    else :
+                        self.left_treated_sum_y += y[i]
+                        self.left_treated_n += 1
 
-                if sample_weight != NULL:
-                    weight = sample_weight[i]
-
-                for k in range(self.n_outputs):
-                    y_ik = y[i * self.y_stride + k]
-                    sum_left[k] += weight * y_ik
-
-                self.weighted_n_left += weight
+                    # TODO - This is probably not necessary
+                    if sample_weight != NULL:
+                        weight = sample_weight[i]
+                    # TODO - This is probably not necessary
+                    for k in range(self.n_outputs):
+                        y_ik = y[i * self.y_stride + k]
+                        sum_left[k] += weight * y_ik
+                    self.weighted_n_left += weight
         else:
             self.reverse_reset()
 
             for p in range(end - 1, new_pos - 1, -1):
                 i = samples[p]
 
-                if self.w[i] == 0 :
-                    self.left_control_sum_y -= y[i]
-                    self.left_control_n -= 1
-                else :
-                    self.left_treated_sum_y -= y[i]
-                    self.left_treated_n -= 1
+                if self.split_indices[i] == 1 : 
 
-                if sample_weight != NULL:
-                    weight = sample_weight[i]
-
-                for k in range(self.n_outputs):
-                    y_ik = y[i * self.y_stride + k]
-                    sum_left[k] -= weight * y_ik
-
-                self.weighted_n_left -= weight
-
+                    if self.w[i] == 0 :
+                        self.left_control_sum_y -= y[i]
+                        self.left_control_n -= 1
+                    else :
+                        self.left_treated_sum_y -= y[i]
+                        self.left_treated_n -= 1
+                    # TODO - This is probably not necessary
+                    if sample_weight != NULL:
+                        weight = sample_weight[i]
+                    # TODO - This is probably not necessary
+                    for k in range(self.n_outputs):
+                        y_ik = y[i * self.y_stride + k]
+                        sum_left[k] -= weight * y_ik
+                    self.weighted_n_left -= weight
+        # TODO - This is probably not necessary
         self.weighted_n_right = (self.weighted_n_node_samples - 
                                  self.weighted_n_left)
         for k in range(self.n_outputs):
             sum_right[k] = sum_total[k] - sum_left[k]
+
+        # Update the statistics for the right child node.  
         self.right_treated_sum_y = self.treated_sum_y - self.left_treated_sum_y
         self.right_control_sum_y = self.control_sum_y - self.left_control_sum_y
         self.right_treated_n = self.treated_n - self.left_treated_n
         self.right_control_n = self.control_n - self.left_control_n
-            
+        
         self.pos = new_pos
 
     # Note - the price of using cpdef so we can set this in tree.py is that we can't parallelize this.
@@ -1691,64 +1703,91 @@ cdef class VarianceCriterion:
     cpdef void set_binary_outcome(self, SIZE_t new_value):
         self.binary_outcome = new_value
 
-    cdef double continuous_outcome_objective_improvement(self) nogil:
-        # Calculate mean effect in left and right children.
-        cdef double left_treated_mean_outcome = self.left_treated_sum_y / self.left_treated_n
-        cdef double left_control_mean_outcome = self.left_control_sum_y / self.left_control_n
-        cdef double right_treated_mean_outcome = self.right_treated_sum_y / self.right_treated_n
-        cdef double right_control_mean_outcome = self.right_control_sum_y / self.right_control_n
-        cdef double left_tau = left_treated_mean_outcome - left_control_mean_outcome
-        cdef double right_tau = right_treated_mean_outcome - right_control_mean_outcome
-        
-        # Calculate the contribution of the children to the variance of the estimator. 
-        cdef double left_estimate_var = (self.left_treated_n + self.left_control_n) * left_tau * left_tau
-        cdef double right_estimate_var = (self.right_treated_n + self.right_control_n) * right_tau * right_tau
-        cdef double split_variance = left_estimate_var + right_estimate_var
+    cdef double continuous_outcome_objective_improvement(self, DOUBLE_t variance_tau, DOUBLE_t* sum_tau, DOUBLE_t* sum_tau_sq, SIZE_t total_n) nogil:
+
+        cdef SIZE_t parent_n = self.treated_n + self.control_n
+        cdef SIZE_t left_n = self.left_treated_n + self.left_control_n
+        cdef SIZE_t right_n = self.right_treated_n + self.right_control_n
+
+        # Calculate tau for node; we'll subtract this from sum_tau, etc...  
+        self.tau = (self.treated_sum_y / self.treated_n) - (self.control_sum_y / self.control_n)
+
+        # Update tau for left and right children.
+        self.left_tau = (self.left_treated_sum_y / self.left_treated_n) - (self.left_control_sum_y / self.left_control_n)
+        self.right_tau = (self.right_treated_sum_y / self.right_treated_n) - (self.right_control_sum_y / self.right_control_n)
+
+        # Calculate the contribution of the children to the variance of the estimator.
+        cdef double left_sum_tau = self.left_tau * left_n
+        cdef double right_sum_tau = self.right_tau * right_n
+        cdef double left_sum_tau_sq = self.left_tau * self.left_tau * left_n
+        cdef double right_sum_tau_sq = self.right_tau * self.right_tau * right_n
     
         # Calculate the variance contribution of the current node.
-        cdef double treated_mean = self.treated_sum_y / self.treated_n
-        cdef double control_mean = self.control_sum_y / self.control_n
-        cdef double node_tau = treated_mean - control_mean
-        cdef node_variance = (treated_n + control_n) * node_tau * node_tau
-   
-        return (split_variance - node_variance)
+        cdef double parent_sum_tau = self.tau * parent_n
+        cdef double parent_sum_tau_sq = self.tau * self.tau * parent_n
+
+        # Update sum_tau, sum_tau_sq and variance_tau
+        cdef double updated_sum_tau = sum_tau[0] - parent_sum_tau + left_sum_tau + right_sum_tau
+        cdef double updated_sum_tau_sq = sum_tau_sq[0] - parent_sum_tau_sq + left_sum_tau_sq + right_sum_tau_sq
+        cdef double updated_mean_tau = updated_sum_tau / total_n
+        cdef double updated_mean_tau_sq = updated_sum_tau_sq / total_n
+        cdef double updated_variance_tau = updated_mean_tau_sq - (updated_mean_tau * updated_mean_tau)
+
+        sum_tau[0] = updated_sum_tau
+        sum_tau_sq[0] = updated_sum_tau_sq
+        return (updated_variance_tau - variance_tau)
     
-    cdef double binary_outcome_objective_improvement(self) nogil: 
+    cdef double binary_outcome_objective_improvement(self, DOUBLE_t variance_tau, DOUBLE_t* sum_tau, DOUBLE_t* sum_tau_sq, SIZE_t total_n) nogil: 
+        cdef SIZE_t parent_n = self.treated_n + self.control_n
+        cdef SIZE_t left_n = self.left_treated_n + self.left_control_n
+        cdef SIZE_t right_n = self.right_treated_n + self.right_control_n
+
         # TODO - what do we do about probs being 0 b/c no observed positive outcomes?
         # Right now, we are putting a floor and ceiling on the estimated probs so they are in [0.01, 0.99]...
         # This is very similar to the continous outcome case except that we keep the estimated
         # probs away from 0 and 1.  
 
-        # Calculate mean effect in left and right children.  
-        cdef double left_treated_prob = minvalue((self.left_treated_sum_y / self.left_treated_n) + 0.01, 0.99)
-        cdef double left_control_prob = minvalue((self.left_control_sum_y / self.left_control_n) + 0.01, 0.99)
-        cdef double right_treated_prob = minvalue((self.right_treated_sum_y / self.right_treated_n) + 0.01, 0.99)
-        cdef double right_control_prob = minvalue((self.right_control_sum_y / self.right_control_n) + 0.01, 0.99)
-        cdef double left_tau = left_treated_prob - left_control_prob
-        cdef double right_tau = right_treated_prob - right_control_prob
+        # Calculate tau for node
+        cdef double treated_prob = minvalue(maxvalue(self.treated_sum_y / self.treated_n, 0.01), 0.99)
+        cdef double control_prob = minvalue(maxvalue(self.control_sum_y / self.control_n, 0.01), 0.99)
+        self.tau = treated_prob - control_prob
 
-        # Calculate the contribution of the children to the variance of the estimator. 
-        cdef double left_estimate_var = (self.left_treated_n + self.left_control_n) * left_tau * left_tau
-        cdef double right_estimate_var = (self.right_treated_n + self.right_control_n) * right_tau * right_tau
-        cdef double split_variance = left_estimate_var + right_estimate_var
+        # Calculate mean effect in left and right children.  
+        cdef double left_treated_prob = minvalue(maxvalue(self.left_treated_sum_y / self.left_treated_n, 0.01), 0.99)
+        cdef double left_control_prob = minvalue(maxvalue(self.left_control_sum_y / self.left_control_n, 0.01), 0.99)
+        cdef double right_treated_prob = minvalue(maxvalue(self.right_treated_sum_y / self.right_treated_n, 0.01), 0.99)
+        cdef double right_control_prob = minvalue(maxvalue(self.right_control_sum_y / self.right_control_n, 0.01), 0.99)
+        self.left_tau = left_treated_prob - left_control_prob
+        self.right_tau = right_treated_prob - right_control_prob
+
+        # Calculate the contribution of the children to the variance of the estimator.
+        cdef double left_sum_tau = self.left_tau * left_n
+        cdef double right_sum_tau = self.right_tau * right_n
+        cdef double left_sum_tau_sq = self.left_tau * self.left_tau * left_n
+        cdef double right_sum_tau_sq = self.right_tau * self.right_tau * right_n
     
         # Calculate the variance contribution of the current node.
-        cdef double treated_mean = self.treated_sum_y / self.treated_n
-        cdef double control_mean = self.control_sum_y / self.control_n
-        cdef double node_tau = treated_mean - control_mean
-        cdef node_variance = (treated_n + control_n) * node_tau * node_tau
-   
-        return (split_variance - node_variance)
-    
+        cdef double parent_sum_tau = self.tau * parent_n
+        cdef double parent_sum_tau_sq = self.tau * self.tau * parent_n
 
-    cdef double objective_improvement(self) nogil:
+        # Update sum_tau, sum_tau_sq and variance_tau
+        cdef double updated_sum_tau = sum_tau[0] - parent_sum_tau + left_sum_tau + right_sum_tau
+        cdef double updated_sum_tau_sq = sum_tau_sq[0] - parent_sum_tau_sq + left_sum_tau_sq + right_sum_tau_sq
+        cdef double updated_mean_tau = updated_sum_tau / total_n
+        cdef double updated_mean_tau_sq = updated_sum_tau_sq / total_n
+        cdef double updated_variance_tau = updated_mean_tau_sq - (updated_mean_tau * updated_mean_tau)
+
+        sum_tau[0] = updated_sum_tau
+        sum_tau_sq[0] = updated_sum_tau_sq
+        return (updated_variance_tau - variance_tau)
+
+    cdef double objective_improvement(self, DOUBLE_t variance_tau, DOUBLE_t* sum_tau, DOUBLE_t* sum_tau_sq, SIZE_t total_n) nogil:
         """Evaluate the objective change given the current values of the sufficient
            statistics."""
-
         if self.binary_outcome == 0 :
-            return self.continuous_outcome_objective_improvement()
+            return self.continuous_outcome_objective_improvement(variance_tau, sum_tau, sum_tau_sq, total_n)
         else :
-            return self.binary_outcome_objective_improvement()
+            return self.binary_outcome_objective_improvement(variance_tau, sum_tau, sum_tau_sq, total_n)
 
     cdef void node_value(self, double* dest) nogil:
         """Compute the node value of samples[start:end] into dest.

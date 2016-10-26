@@ -39,9 +39,11 @@ from ._criterion import Criterion
 from ._criterion import Entropy
 from ._criterion import Gini
 from ._criterion import PowersCriterion
+from ._criterion import VarianceCriterion
 from ._splitter import Splitter
 from ._splitter import PropensitySplitter
 from ._splitter import PowersSplitter
+from ._splitter import VarianceSplitter
 from ._tree import DepthFirstTreeBuilder
 from ._tree import BestFirstTreeBuilder
 from ._tree import PropensityTreeBuilder
@@ -1199,7 +1201,6 @@ class PropensityTree(BaseDecisionTree, ClassifierMixin):
                  max_leaf_nodes=None,
                  class_weight=None,
                  presort=False):
-        print type(self)
         super(PropensityTree, self).__init__(
             criterion="propensity",
             splitter="propensity",
@@ -1839,7 +1840,6 @@ class DoubleSampleTree(BaseDecisionTree, ClassifierMixin):
                  max_leaf_nodes=None,
                  class_weight=None,
                  presort=False):
-        print type(self)
         super(DoubleSampleTree, self).__init__(
             criterion="variance",
             splitter="variance",
@@ -1902,22 +1902,15 @@ class DoubleSampleTree(BaseDecisionTree, ClassifierMixin):
         # Determine output settings
         n_samples, self.n_features_ = X.shape
 
-        # TODO
-        # Split the data X, y, and w into two parts - one for fitting, and one for
-        # estimating.
+        # self.split_indices is used to partition samples into two sets -
+        # split_indices == 0 - used for estimation of treatment effects
+        # split_indices == 1 - used to find splits.  
         n_split = int(floor(n_samples / 2))
-        split_indices = np.random.randint(n_samples, size=n_split)
-        X_for_split = X[split_indices,:]
-        y_for_split = y[split_indices]
-        w_for_split = w[split_indices]
-        X_for_estimation = X[-split_indices,:]
-        y_for_estimation = y[-split_indices]
-        w_for_split = w[-split_indices]
+        self.split_indices = np.zeros(n_samples, dtype=np.int)
+        self.split_indices[ np.random.choice(n_samples, size=n_split, replace=False) ] = 1
+        # dtype is int64, which is int, and is cdef'ed to SIZE_t in most pxd files.  
 
-        # Start with X, y, and w for splits
-        X = X_for_split
-        y = y_for_split
-        w = w_for_split
+        n_samples, self.n_features_ = X.shape        
         
         # And enforce this
         X_idx_sorted = None
@@ -1933,7 +1926,6 @@ class DoubleSampleTree(BaseDecisionTree, ClassifierMixin):
                 if X.indices.dtype != np.intc or X.indptr.dtype != np.intc:
                     raise ValueError("No support for np.int64 index based "
                                      "sparse matrices")
-
 
         y = np.atleast_1d(y)
         w = np.atleast_1d(w)
@@ -2057,10 +2049,10 @@ class DoubleSampleTree(BaseDecisionTree, ClassifierMixin):
                 raise ValueError("Sample weights array has more "
                                  "than one dimension: %d" %
                                  len(sample_weight.shape))
-            if len(sample_weight) != n_samples:
-                raise ValueError("Number of weights=%d does not match "
-                                 "number of samples=%d" %
-                                 (len(sample_weight), n_samples))
+            # if len(sample_weight) != n_samples:
+            #     raise ValueError("Number of weights=%d does not match "
+            #                      "number of samples=%d" %
+            #                      (len(sample_weight), n_samples))
 
         if expanded_class_weight is not None:
             if sample_weight is not None:
@@ -2105,13 +2097,12 @@ class DoubleSampleTree(BaseDecisionTree, ClassifierMixin):
         # Build tree
         criterion = VarianceCriterion(self.n_outputs_,
                                       self.n_classes_)
-        #criterion = Gini(self.n_outputs_, self.n_classes_)
-        splitter = DoubleSampleSplitter(criterion,
-                                        self.max_features_,
-                                        min_samples_leaf,
-                                        min_weight_leaf,
-                                        random_state,
-                                        self.presort)
+        splitter = VarianceSplitter(criterion,
+                                    self.max_features_,
+                                    min_samples_leaf,
+                                    min_weight_leaf,
+                                    random_state,
+                                    self.presort)
 
         self.tree_ = Tree(self.n_features_, self.n_classes_, self.n_outputs_)
 
@@ -2121,38 +2112,47 @@ class DoubleSampleTree(BaseDecisionTree, ClassifierMixin):
                                           min_samples_leaf,
                                           min_weight_leaf,
                                           max_depth)
-        builder.build(self.tree_, X, y, w, sample_weight, X_idx_sorted)
+        builder.build(self.tree_, X, y, w, self.split_indices, sample_weight, X_idx_sorted)
 
         # Now apply to estimation data and get the leaf node assignments; keep them in an instance var.
-        y = y_for_estimation
-        w = w_for_estimation
-        X = X_for_estimation
-        self.y = np.copy(y)
-        self.w = np.copy(w)
+        # The problem is - what if some leaf nodes don't have any samples from which to estimate the 
+        # treatment effect?  And what about the requirement for a min number of samples in each leaf node?
+        # What do we do then!...  
         self.training_sample_nodes = self.tree_.apply(X)
 
         # Calculate effect estimates on each.
         # How do we do this?  We want to average the outcome in each node, conditioned on w.
-        # Then we just subtract...
+        # num_bins is number of nodes in the tree (not just leaf nodes).
+        # We keep arrays treated_y, control_y, etc, that keep track of quantities in 
+        # each node, but only for leaf nodes in practice.  
         num_bins = np.max(self.training_sample_nodes) + 1
         self.treated_y = np.zeros(num_bins)
         self.control_y = np.zeros(num_bins)
         self.treated_n = np.zeros(num_bins)
         self.control_n = np.zeros(num_bins)
+
+        # For each sample, if it wasn't used to find the splits (split_indices[i] == 0)
+        # then use it for effect estimation.  
         for i in range(0, len(self.training_sample_nodes)) :
-            node_idx = self.training_sample_nodes[i]
-            if (self.w[i] == 0) :
-                self.control_y[node_idx] += self.y[i]
-                self.control_n[node_idx] += 1
-            else :
-                self.treated_y[node_idx] += self.y[i]
-                self.treated_n[node_idx] += 1
+            if self.split_indices[i] == 0 : 
+                node_idx = self.training_sample_nodes[i]
+                if (w[i] == 0) :
+                    self.control_y[node_idx] += y[i]
+                    self.control_n[node_idx] += 1
+                else :
+                    self.treated_y[node_idx] += y[i]
+                    self.treated_n[node_idx] += 1
+                    
+        # Guard against divide by zero; should execute this...
+        # presumably, all non-leaf nodes should have -1 as the value.  
         for i in range(num_bins) :
             if self.control_n[i] == 0 :
                 self.control_n[i] = -1
             if self.treated_n[i] == 0 :
                 self.treated_n[i] = -1
-                
+
+        # Calculate means in each leaf node, then subtract to get effect estimates.
+        # note - this does not use any guards against 0 or 1 probabilities...  
         self.treated_mean_y = self.treated_y / self.treated_n
         self.control_mean_y = self.control_y / self.control_n
         self.effect_estimates = self.treated_mean_y - self.control_mean_y
@@ -2503,7 +2503,6 @@ class PowersTree(BaseDecisionTree, ClassifierMixin):
                  max_leaf_nodes=None,
                  class_weight=None,
                  presort=False):
-        print type(self)
         super(PowersTree, self).__init__(
             criterion="PowersCriterion",
             splitter="PowersSplitter",

@@ -85,6 +85,13 @@ def _generate_sample_indices(random_state, n_samples):
 
     return sample_indices
 
+def _generate_sample_indices_without_replacement(random_state, n_samples, sample_size):
+    """Private function used for double sample and propensity forests in lieu of bootstrap sampling."""
+    random_instance = check_random_state(random_state)
+    indices = np.arange(n_samples)
+    sample_indices = random_instance.choice(indices, sample_size, replace=False)
+    return sample_indices
+
 def _generate_unsampled_indices(random_state, n_samples):
     """Private function used to forest._set_oob_score function."""
     sample_indices = _generate_sample_indices(random_state, n_samples)
@@ -132,30 +139,24 @@ def _parallel_build_propensity_trees(tree, forest, X, y, w, sample_weight, tree_
     if verbose > 1:
         print("building tree %d of %d" % (tree_idx + 1, n_trees))
 
-    if forest.bootstrap:
-        n_samples = X.shape[0]
-        if sample_weight is None:
-            curr_sample_weight = np.ones((n_samples,), dtype=np.float64)
-        else:
-            curr_sample_weight = sample_weight.copy()
-
-        indices = _generate_sample_indices(tree.random_state, n_samples)
-        sample_counts = bincount(indices, minlength=n_samples)
-        curr_sample_weight *= sample_counts
-
-        if class_weight == 'subsample':
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', DeprecationWarning)
-                curr_sample_weight *= compute_sample_weight('auto', w, indices)
-        elif class_weight == 'balanced_subsample':
-            curr_sample_weight *= compute_sample_weight('balanced', w, indices)
-
-        tree.fit(X, y, w, sample_weight=curr_sample_weight, check_input=False)
-    else:
-        tree.fit(X, y, w, sample_weight=sample_weight, check_input=False)
-
+    n_samples = X.shape[0]
+    indices = _generate_sample_indices_without_replacement(tree.random_state, n_samples, forest.subsample_size)
+    forest.sampleMembership[tree_idx, indices] = 1
+    tree.fit(X[indices,:], y[indices], w[indices], sample_weight=None, check_input=False)
     return tree
 
+def _parallel_build_double_sample_trees(tree, forest, X, y, w, sample_weight, tree_idx, n_trees,
+                                        verbose=0, class_weight=None):
+    """Private function used to fit a single double sample tree in parallel."""
+    if verbose > 1:
+        print("building tree %d of %d" % (tree_idx + 1, n_trees))
+
+    n_samples = X.shape[0]
+    indices = _generate_sample_indices_without_replacement(tree.random_state, n_samples, forest.subsample_size)
+    forest.sampleMembership[tree_idx, indices] = 1
+    tree.fit(X[indices,:], y[indices], w[indices], sample_weight=None, check_input=False)
+
+    return tree
 
 
 
@@ -171,8 +172,8 @@ def _parallel_build_powers_trees(tree, forest, X, y, w, sample_weight, tree_idx,
             curr_sample_weight = np.ones((n_samples,), dtype=np.float64)
         else:
             curr_sample_weight = sample_weight.copy()
-
         indices = _generate_sample_indices(tree.random_state, n_samples)
+        forest.sampleMembership[tree_idx, indices] = 1        
         sample_counts = bincount(indices, minlength=n_samples)
         curr_sample_weight *= sample_counts
 
@@ -188,37 +189,6 @@ def _parallel_build_powers_trees(tree, forest, X, y, w, sample_weight, tree_idx,
         tree.fit(X, y, w, sample_weight=sample_weight, check_input=False)
 
     return tree
-
-def _parallel_build_double_sample_trees(tree, forest, X, y, w, sample_weight, tree_idx, n_trees,
-                                        verbose=0, class_weight=None):
-    """Private function used to fit a single double sample tree in parallel."""
-    if verbose > 1:
-        print("building tree %d of %d" % (tree_idx + 1, n_trees))
-
-    if forest.bootstrap:
-        n_samples = X.shape[0]
-        if sample_weight is None:
-            curr_sample_weight = np.ones((n_samples,), dtype=np.float64)
-        else:
-            curr_sample_weight = sample_weight.copy()
-
-        indices = _generate_sample_indices(tree.random_state, n_samples)
-        sample_counts = bincount(indices, minlength=n_samples)
-        curr_sample_weight *= sample_counts
-
-        if class_weight == 'subsample':
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', DeprecationWarning)
-                curr_sample_weight *= compute_sample_weight('auto', w, indices)
-        elif class_weight == 'balanced_subsample':
-            curr_sample_weight *= compute_sample_weight('balanced', w, indices)
-
-        tree.fit(X, y, w, sample_weight=curr_sample_weight, check_input=False)
-    else:
-        tree.fit(X, y, w, sample_weight=sample_weight, check_input=False)
-
-    return tree
-
 
 
 def _parallel_helper(obj, methodname, *args, **kwargs):
@@ -1941,7 +1911,7 @@ class PropensityForest(ForestClassifier):
         self.max_leaf_nodes = max_leaf_nodes
 
 
-    def fit(self, X, y, w, sample_weight=None):
+    def fit(self, X, y, w, subsample_size=None, sample_weight=None):
         """Build a forest of trees from the training set (X, y, w).
 
         Parameters
@@ -1981,6 +1951,12 @@ class PropensityForest(ForestClassifier):
 
         # Remap output
         n_samples, self.n_features_ = X.shape
+
+        # Set subsample size.
+        if subsample_size == None :
+            self.subsample_size = int(np.floor(n_samples**0.9))
+        else :
+            self.subsample_size = subsample_size
 
         # Various checks on y
         # TODO - should do appropriate subset on w.  
@@ -2023,6 +1999,9 @@ class PropensityForest(ForestClassifier):
         if not self.warm_start:
             # Free allocated memory, if any
             self.estimators_ = []
+
+        # Allocate matrix to store which samples are included in each bootstrap sample.
+        self.sampleMembership = np.zeros((self.n_estimators, n_samples), dtype=np.int)
 
         n_more_estimators = self.n_estimators - len(self.estimators_)
 
@@ -2090,7 +2069,42 @@ class PropensityForest(ForestClassifier):
         effects /= len(self.estimators_)
 
         return effects
-        
+
+    def estimate_variance(self, X) :
+        X = self._validate_X_predict(X)
+
+        # Assign chunk of trees to jobs
+        n_jobs, _, _ = _partition_estimators(self.n_estimators, self.n_jobs)
+
+        # Parallel loop
+        all_effects = Parallel(n_jobs=n_jobs, verbose=self.verbose,
+                             backend="threading")(
+            delayed(_parallel_helper)(e, 'predict_effect', X)
+            for e in self.estimators_)
+
+        n_samples = len(all_effects[0])
+        n_estimators = len(all_effects)
+        effects_matrix = np.zeros((n_estimators, n_samples), dtype=np.float32)
+        for i in range(0, n_estimators) : 
+            for j in range(0, n_samples) :
+                effects_matrix[i,j] = all_effects[i][j]
+
+        # This is a little indirect for efficiency...
+        # Calculate means for columns of effects and sample membership, then calculate
+        # covariance as inner products. 
+        mean_effects = effects_matrix.mean(0)
+        mean_membership = self.sampleMembership.mean(0)
+        centered_effects = (effects_matrix - mean_effects) 
+        centered_membership = self.sampleMembership - mean_membership 
+        covariances = np.dot(centered_effects.transpose(), centered_membership) / (n_estimators - 1)
+
+        # Now square the covariances and sum across the rows
+        sq_covariances = covariances * covariances
+        s = self.subsample_size
+        finite_sample_correction = ((n_samples-1)*n_samples) / ((n_samples-s)*(n_samples-s)) 
+        retval = np.sum(sq_covariances, axis=1) * finite_sample_correction
+        return retval
+
     def predict_outcomes(self, X) : 
         # Check data
         X = self._validate_X_predict(X)
@@ -2288,7 +2302,7 @@ class DoubleSampleForest(ForestClassifier):
                  verbose=0,
                  warm_start=False,
                  class_weight=None):
-        super(PropensityForest, self).__init__(
+        super(DoubleSampleForest, self).__init__(
             base_estimator=DoubleSampleTree(),
             n_estimators=n_estimators,
             estimator_params=("max_depth", "min_samples_split",
@@ -2312,7 +2326,7 @@ class DoubleSampleForest(ForestClassifier):
         self.max_leaf_nodes = max_leaf_nodes
 
 
-    def fit(self, X, y, w, sample_weight=None):
+    def fit(self, X, y, w, subsample_size=None, sample_weight=None):
         """Build a forest of trees from the training set (X, y, w).
 
         Parameters
@@ -2353,8 +2367,13 @@ class DoubleSampleForest(ForestClassifier):
         # Remap output
         n_samples, self.n_features_ = X.shape
 
+        # Set subsample_size
+        if subsample_size == None :
+            self.subsample_size = int(np.floor(n_samples**0.9))
+        else :
+            self.subsample_size = subsample_size
+        
         # Various checks on y
-        # TODO - should do appropriate subset on w.  
         y = np.atleast_1d(y)
         if y.ndim == 2 and y.shape[1] == 1:
             warn("A column-vector y was passed when a 1d array was"
@@ -2396,6 +2415,9 @@ class DoubleSampleForest(ForestClassifier):
             self.estimators_ = []
 
         n_more_estimators = self.n_estimators - len(self.estimators_)
+
+        # Allocate matrix to store which samples are included in each bootstrap sample.
+        self.sampleMembership = np.zeros((self.n_estimators, n_samples), dtype=np.int)
 
         if n_more_estimators < 0:
             raise ValueError('n_estimators=%d must be larger or equal to '
@@ -2461,6 +2483,41 @@ class DoubleSampleForest(ForestClassifier):
         effects /= len(self.estimators_)
 
         return effects
+
+    def estimate_variance(self, X) :
+        X = self._validate_X_predict(X)
+
+        # Assign chunk of trees to jobs
+        n_jobs, _, _ = _partition_estimators(self.n_estimators, self.n_jobs)
+
+        # Parallel loop
+        all_effects = Parallel(n_jobs=n_jobs, verbose=self.verbose,
+                             backend="threading")(
+            delayed(_parallel_helper)(e, 'predict_effect', X)
+            for e in self.estimators_)
+
+        n_samples = len(all_effects[0])
+        n_estimators = len(all_effects)
+        effects_matrix = np.zeros((n_estimators, n_samples), dtype=np.float32)
+        for i in range(0, n_estimators) : 
+            for j in range(0, n_samples) :
+                effects_matrix[i,j] = all_effects[i][j]
+
+        # This is a little indirect for efficiency...
+        # Calculate means for columns of effects and sample membership, then calculate
+        # covariance as inner products. 
+        mean_effects = effects_matrix.mean(0)
+        mean_membership = self.sampleMembership.mean(0)
+        centered_effects = (effects_matrix - mean_effects) 
+        centered_membership = self.sampleMembership - mean_membership 
+        covariances = np.dot(centered_effects.transpose(), centered_membership) / (n_estimators - 1)
+
+        # Now square the covariances and sum across the rows
+        sq_covariances = covariances * covariances
+        s = self.subsample_size
+        finite_sample_correction = ((n_samples-1)*n_samples) / ((n_samples-s)*(n_samples-s)) 
+        retval = np.sum(sq_covariances, axis=1) * finite_sample_correction
+        return retval
         
     def predict_outcomes(self, X) : 
         # Check data

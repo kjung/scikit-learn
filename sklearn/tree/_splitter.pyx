@@ -2383,9 +2383,12 @@ cdef class VarianceSplitter:
 
         self.samples = NULL
         self.n_samples = 0
+        self.n_treated = 0
+        self.n_control = 0
         self.features = NULL
         self.n_features = 0
         self.feature_values = NULL
+        self.split_indices = NULL
 
         self.y = NULL
         self.y_stride = 0
@@ -2394,6 +2397,10 @@ cdef class VarianceSplitter:
         self.sample_weight = NULL
         self.X_sample_stride = 0
         self.X_feature_stride = 0
+
+        self.sum_tau = 0
+        self.sum_tau_sq = 0
+        self.variance_tau = 0
 
         self.max_features = max_features
         self.min_samples_leaf = min_samples_leaf
@@ -2420,6 +2427,7 @@ cdef class VarianceSplitter:
                    np.ndarray[DOUBLE_t, ndim=2, mode="c"] y,
                    np.ndarray[DOUBLE_t, ndim=2, mode="c"] w, 
                    DOUBLE_t* sample_weight,
+                   SIZE_t* split_indices,                    
                    np.ndarray X_idx_sorted=None) except *:
         """Initialize the splitter.
 
@@ -2445,6 +2453,7 @@ cdef class VarianceSplitter:
 
         self.rand_r_state = self.random_state.randint(0, RAND_R_MAX)
         cdef SIZE_t n_samples = X.shape[0]
+        self.split_indices = split_indices
 
         # Create a new array which will be used to store nonzero
         # samples from the feature of interest
@@ -2487,6 +2496,29 @@ cdef class VarianceSplitter:
 
         self.sample_weight = sample_weight
 
+        # Initialize initial tau, tau_sq, sum_tau, sum_tau_sq, and variance_tau
+        cdef DOUBLE_t sum_y_treated = 0
+        cdef DOUBLE_t sum_y_control = 0
+        self.n_treated = 0
+        self.n_control = 0
+        for i in range(n_samples) :
+            if self.split_indices[i] == 1 : 
+                if self.w[i] == 0 :
+                    sum_y_control += self.y[i]
+                    self.n_control += 1
+                else :
+                    sum_y_treated += self.y[i]
+                    self.n_treated += 1
+
+        # Override self.n_samples here; we only want to count samples used to estimate splits right now...
+        self.n_samples = self.n_control + self.n_treated
+
+        # Calculate initial sum_tau, sum_tau_sq, and variance_tau... 
+        cdef DOUBLE_t init_tau = (sum_y_treated / self.n_treated) - (sum_y_control / self.n_control)
+        self.sum_tau = (self.n_treated + self.n_control) * init_tau
+        self.sum_tau_sq = (self.n_treated + self.n_control) * init_tau*init_tau
+        self.variance_tau = (self.sum_tau_sq / (self.n_treated + self.n_control)) - (init_tau * init_tau)
+        
         # Initialize X
         cdef np.ndarray X_ndarray = X
 
@@ -2528,20 +2560,24 @@ cdef class VarianceSplitter:
                             self.weighted_n_samples,
                             self.samples,
                             start,
-                            end) 
+                            end,
+                            self.split_indices) 
         weighted_n_node_samples[0] = self.criterion.weighted_n_node_samples
 
     cdef INT32_t min_class_count(self, SIZE_t start, SIZE_t end) nogil:
         """Count the min number of samples in the range [start:end[,
-           with respect to the treatment w (assume binary tx).   """
+           with respect to the treatment w (assume binary tx).  Note -
+           we only count samples used for effect estimation, i.e.,
+           with self.split_indices == 0 """
         cdef INT32_t count0 = 0
         cdef INT32_t count1 = 0
         cdef SIZE_t i
         for i in range(start, end):
-            if (self.w[self.samples[i]] == 0):
-                count0 += 1
-            else:
-                count1 += 1
+            if self.split_indices[ self.samples[i] ] == 0 : 
+                if (self.w[self.samples[i]] == 0):
+                    count0 += 1
+                else:
+                    count1 += 1
         if count0 < count1:
             return count0
         else:
@@ -2574,6 +2610,11 @@ cdef class VarianceSplitter:
         cdef SplitRecord best, current
         cdef double current_objective_improvement = -INFINITY
         cdef double best_objective_improvement = -INFINITY
+        cdef double current_sum_tau = -INFINITY
+        cdef double current_sum_tau_sq = -INFINITY
+        cdef double best_sum_tau = -INFINITY
+        cdef double best_sum_tau_sq = -INFINITY
+        cdef double mean_tau
 
         cdef SIZE_t f_i = n_features
         cdef SIZE_t f_j
@@ -2613,6 +2654,7 @@ cdef class VarianceSplitter:
         # newly discovered constant features to spare computation on descendant
         # nodes.
 
+        # Iterate over some features...  
         while (f_i > n_total_constants and  # Stop early if remaining features
                                             # are constant
                 (n_visited_features < max_features or
@@ -2726,12 +2768,19 @@ cdef class VarianceSplitter:
                             # if ((self.criterion.weighted_n_left < min_weight_leaf) or
                             #         (self.criterion.weighted_n_right < min_weight_leaf)):
                             #     continue
-                            current_objective_improvement = self.criterion.objective_improvement()
+                            current_sum_tau = self.sum_tau
+                            current_sum_tau_sq = self.sum_tau_sq
+                            current_objective_improvement = self.criterion.objective_improvement(self.variance_tau,
+                                                                                                 &current_sum_tau,
+                                                                                                 &current_sum_tau_sq,
+                                                                                                 self.n_samples)
                             if current_objective_improvement <= MIN_OBJECTIVE_IMPROVEMENT :
                                 continue
 
                             if current_objective_improvement > best_objective_improvement:
                                 best_objective_improvement = current_objective_improvement
+                                best_sum_tau = current_sum_tau
+                                best_sum_tau_sq = current_sum_tau_sq
                                 current.threshold = (Xf[p - 1] + Xf[p]) / 2.0
                                 current.improvement = current_objective_improvement
                                 if current.threshold == Xf[p]:
@@ -2739,8 +2788,15 @@ cdef class VarianceSplitter:
                                 best = current  # copy
 
         # Reorganize into samples[start:best.pos] + samples[best.pos:end]
+        # Only do this if we found a good split...        
         if best.pos < end:
-            # Only do this if we found a good split...  
+            # Update variance_tau, sum_tau, and sum_tau_sq
+            mean_tau = best_sum_tau / self.n_samples
+            self.variance_tau = (best_sum_tau_sq / self.n_samples) - (mean_tau*mean_tau)
+            self.sum_tau = best_sum_tau
+            self.sum_tau_sq = best_sum_tau_sq
+
+            # Reorganize samples...  
             feature_offset = X_feature_stride * best.feature
             partition_end = end
             p = start
@@ -2755,12 +2811,6 @@ cdef class VarianceSplitter:
                     tmp = samples[partition_end]
                     samples[partition_end] = samples[p]
                     samples[p] = tmp
-            # Don't think any of this is necessary...  
-            # self.criterion.reset()
-            # self.criterion.update(best.pos)
-            # best.improvement = self.criterion.impurity_improvement(impurity)
-            # self.criterion.children_impurity(&best.impurity_left,
-            #                                  &best.impurity_right)
 
         # Reset sample mask
         if self.presort == 1:
@@ -2789,4 +2839,5 @@ cdef class VarianceSplitter:
         """Return the impurity of the current node.  Not at all clear what this should do for Scott's algorithm...
            TODO: Remove any dependencies on this...  
         """
-        return self.criterion.objective_improvement()
+        #return self.criterion.objective_improvement()
+        return 0

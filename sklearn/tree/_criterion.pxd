@@ -157,6 +157,7 @@ cdef class VarianceCriterion:
     cdef SIZE_t start                    # samples[start:pos] are the samples in the left node
     cdef SIZE_t pos                      # samples[pos:end] are the samples in the right node
     cdef SIZE_t end
+    cdef SIZE_t* split_indices           # if == 0, use for criterion calculations.  
 
     cdef SIZE_t n_outputs                # Number of outputs
     cdef SIZE_t n_node_samples           # Number of samples in the node (end-start)
@@ -180,6 +181,10 @@ cdef class VarianceCriterion:
     cdef SIZE_t treated_n                       # Number of treated
     cdef SIZE_t control_n                       # Number of control
 
+    cdef double left_tau                 # Estimate of treatment effect in left child
+    cdef double right_tau                # Estimate of treatment effect in right child
+    cdef double tau                      # Estimate of treatment effect in parent node 
+
     cdef SIZE_t binary_outcome                  # 1 if the outcome is binary, 0 otherwise.  
     
     cdef double* sum_total          # For classification criteria, the sum of the
@@ -196,15 +201,15 @@ cdef class VarianceCriterion:
     # Methods
     cdef void init(self, DOUBLE_t* y, SIZE_t y_stride, DOUBLE_t* w, SIZE_t w_stride, DOUBLE_t* sample_weight,
                    double weighted_n_samples, SIZE_t* samples, SIZE_t start,
-                   SIZE_t end) nogil
+                   SIZE_t end, SIZE_t* split_indices) nogil
     cdef void reset(self) nogil
     cdef void reverse_reset(self) nogil
     cdef void update(self, SIZE_t new_pos) nogil
     
     cpdef void set_binary_outcome(self, SIZE_t new_value) 
-    cdef double continuous_outcome_objective_improvement(self) nogil
-    cdef double binary_outcome_objective_improvement(self) nogil    
-    cdef double objective_improvement(self) nogil
+    cdef double continuous_outcome_objective_improvement(self, DOUBLE_t variance_tau, DOUBLE_t* sum_tau, DOUBLE_t* sum_tau_sq, SIZE_t total_n) nogil
+    cdef double binary_outcome_objective_improvement(self, DOUBLE_t variance_tau, DOUBLE_t* sum_tau, DOUBLE_t* sum_tau_sq, SIZE_t total_n) nogil    
+    cdef double objective_improvement(self, DOUBLE_t variance_tau, DOUBLE_t* sum_tau, DOUBLE_t* sum_tau_sq, SIZE_t total_n) nogil
     cdef void node_value(self, double* dest) nogil
 
 

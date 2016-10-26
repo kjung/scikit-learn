@@ -791,9 +791,8 @@ cdef class Tree:
                         node = &self.nodes[node.left_child]
                     else:
                         node = &self.nodes[node.right_child]
-
                 out_ptr[i] = <SIZE_t>(node - self.nodes)  # node offset
-
+                
         return out
 
     cdef inline np.ndarray _apply_sparse_csr(self, object X):
@@ -1368,7 +1367,6 @@ cdef class PowersTreeBuilder:
                 depth = stack_record.depth
                 parent = stack_record.parent
                 is_left = stack_record.is_left
-                # impurity = stack_record.impurity
                 n_constant_features = stack_record.n_constant_features
 
                 n_node_samples = end - start
@@ -1378,14 +1376,6 @@ cdef class PowersTreeBuilder:
                            (n_node_samples < min_samples_split) or
                            (n_node_samples < 2 * min_samples_leaf) or
                            (weighted_n_node_samples < min_weight_leaf))
-
-                # TODO - get rid of call to node_impurity; figure out how to
-                # adjust this to not have node impurity  at all!  
-                # if first:
-                #     impurity = splitter.node_impurity()
-                #     first = 0
-                #
-                # is_leaf = is_leaf or (impurity <= MIN_IMPURITY_SPLIT)
 
                 if not is_leaf:
                     splitter.node_split(&split, &n_constant_features)
@@ -1476,13 +1466,17 @@ cdef class DoubleSampleTreeBuilder:
 
 
     cpdef build(self, Tree tree, object X, np.ndarray y,
-                np.ndarray w, 
+                np.ndarray w,
+                np.ndarray split_indices, 
                 np.ndarray sample_weight=None,
-                np.ndarray X_idx_sorted=None):
+                np.ndarray X_idx_sorted=None) : 
+
         """Build a decision tree from the training set (X, y)."""
 
         # check input
         X, y, w, sample_weight = self._check_input(X, y, w, sample_weight)
+
+        cdef SIZE_t* split_indices_ptr = <SIZE_t*>split_indices.data
 
         cdef DOUBLE_t* sample_weight_ptr = NULL
         if sample_weight is not None:
@@ -1507,7 +1501,7 @@ cdef class DoubleSampleTreeBuilder:
 
         # Recursive partition (without actual recursion)
         # We have to init the splitter with the treatment indicators w...
-        splitter.init(X, y, w, sample_weight_ptr, X_idx_sorted)
+        splitter.init(X, y, w, sample_weight_ptr, split_indices_ptr, X_idx_sorted)
 
         cdef SIZE_t start
         cdef SIZE_t end
@@ -1528,7 +1522,7 @@ cdef class DoubleSampleTreeBuilder:
         cdef SIZE_t max_depth_seen = -1
         cdef int rc = 0
 
-        cdef Stack stack = Stack(INITIAL_STACK_SIZE)
+        cdef Stack stack = Stack(INITIAL_STACK_SIZE) # Stack of nodes to split.  
         cdef StackRecord stack_record
 
         # push root node onto stack
@@ -1545,7 +1539,6 @@ cdef class DoubleSampleTreeBuilder:
                 depth = stack_record.depth
                 parent = stack_record.parent
                 is_left = stack_record.is_left
-                # impurity = stack_record.impurity
                 n_constant_features = stack_record.n_constant_features
 
                 n_node_samples = end - start
@@ -1556,18 +1549,11 @@ cdef class DoubleSampleTreeBuilder:
                            (n_node_samples < 2 * min_samples_leaf) or
                            (weighted_n_node_samples < min_weight_leaf))
 
-                # TODO - get rid of call to node_impurity; figure out how to
-                # adjust this to not have node impurity  at all!  
-                # if first:
-                #     impurity = splitter.node_impurity()
-                #     first = 0
-                #
-                # is_leaf = is_leaf or (impurity <= MIN_IMPURITY_SPLIT)
-
                 if not is_leaf:
                     splitter.node_split(&split, &n_constant_features)
                     is_leaf = is_leaf or (split.pos >= end)
-
+                
+                # Add this node to tree - meaning, add split variable and split point, etc.  
                 node_id = tree._add_node(parent, is_left, is_leaf, split.feature,
                                          split.threshold, 0.0, n_node_samples,
                                          weighted_n_node_samples)
@@ -1578,15 +1564,16 @@ cdef class DoubleSampleTreeBuilder:
 
                 # Store value for all nodes, to facilitate tree/model
                 # inspection and interpretation
-                splitter.node_value(tree.value + node_id * tree.value_stride)
+                # TODO - get rid of this?  Not used in estimation... 
+                #splitter.node_value(tree.value + node_id * tree.value_stride)
                 if not is_leaf:
-                    # Push right child on stack
+                    # Push right child on stack to split later. 
                     rc = stack.push(split.pos, end, depth + 1, node_id, 0,
                                     0.0, n_constant_features)
                     if rc == -1:
                         break
 
-                    # Push left child on stack
+                    # Push left child on stack to split later.  
                     rc = stack.push(start, split.pos, depth + 1, node_id, 1,
                                     0.0, n_constant_features)
                     if rc == -1:

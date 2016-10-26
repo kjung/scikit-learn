@@ -14,6 +14,7 @@ cimport numpy as np
 
 from ._criterion cimport Criterion
 from ._criterion cimport PowersCriterion
+from ._criterion cimport VarianceCriterion
 
 ctypedef np.npy_float32 DTYPE_t          # Type of X
 ctypedef np.npy_float64 DOUBLE_t         # Type of y, sample_weight
@@ -194,7 +195,7 @@ cdef class VarianceSplitter:
     # The impurity computations are delegated to a criterion object.
 
     # Internal structures
-    cdef public PowersCriterion criterion      # Powers criterion
+    cdef public VarianceCriterion criterion      # Variance criterion
     cdef public SIZE_t max_features      # Number of features to test
     cdef public SIZE_t min_samples_leaf  # Min samples in a leaf
     cdef public double min_weight_leaf   # Minimum weight in a leaf
@@ -203,7 +204,10 @@ cdef class VarianceSplitter:
     cdef UINT32_t rand_r_state           # sklearn_rand_r random number state
 
     cdef SIZE_t* samples                 # Sample indices in X, y
+    cdef SIZE_t* split_indices           # == 1 if used for splits, 0 otherwise.  
     cdef SIZE_t n_samples                # X.shape[0]
+    cdef SIZE_t n_treated                # Num w == 1
+    cdef SIZE_t n_control                # Num w == 0
     cdef double weighted_n_samples       # Weighted number of samples
     cdef SIZE_t* features                # Feature indices in X
     cdef SIZE_t* constant_features       # Constant features indices
@@ -221,6 +225,10 @@ cdef class VarianceSplitter:
     cdef DOUBLE_t* w
     cdef SIZE_t w_stride
     cdef DOUBLE_t* sample_weight
+
+    cdef DOUBLE_t sum_tau                # Sum of tau
+    cdef DOUBLE_t sum_tau_sq             # Sum of tau_sq
+    cdef DOUBLE_t variance_tau           # Current variance of tau
 
     cdef DTYPE_t* X
     cdef SIZE_t X_sample_stride
@@ -250,6 +258,7 @@ cdef class VarianceSplitter:
     # Methods
     cdef void init(self, object X, np.ndarray y, np.ndarray w, 
                    DOUBLE_t* sample_weight,
+		   SIZE_t* split_indices, 
                    np.ndarray X_idx_sorted=*) except *
 
     cdef void node_reset(self, SIZE_t start, SIZE_t end,
