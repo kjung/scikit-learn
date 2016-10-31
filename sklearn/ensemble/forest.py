@@ -2505,7 +2505,8 @@ class DoubleSampleForest(ForestClassifier):
 
         # This is a little indirect for efficiency...
         # Calculate means for columns of effects and sample membership, then calculate
-        # covariance as inner products. 
+        # covariance as inner products.
+        # Check to see if we are getting the right dimensions for everything... 
         mean_effects = effects_matrix.mean(0)
         mean_membership = self.sampleMembership.mean(0)
         centered_effects = (effects_matrix - mean_effects) 
@@ -2515,7 +2516,7 @@ class DoubleSampleForest(ForestClassifier):
         # Now square the covariances and sum across the rows
         sq_covariances = covariances * covariances
         s = self.subsample_size
-        finite_sample_correction = ((n_samples-1)*n_samples) / ((n_samples-s)*(n_samples-s)) 
+        finite_sample_correction = ((n_samples-1)*n_samples) / ((n_samples-s)**2)
         retval = np.sum(sq_covariances, axis=1) * finite_sample_correction
         return retval
         
