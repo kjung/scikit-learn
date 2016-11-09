@@ -1950,7 +1950,8 @@ class PropensityForest(ForestClassifier):
             X.sort_indices()
 
         # Remap output
-        n_samples, self.n_features_ = X.shape
+        self.n_samples, self.n_features_ = X.shape
+        n_samples = self.n_samples
 
         # Set subsample size.
         if subsample_size == None :
@@ -2088,21 +2089,29 @@ class PropensityForest(ForestClassifier):
         for i in range(0, n_estimators) : 
             for j in range(0, n_samples) :
                 effects_matrix[i,j] = all_effects[i][j]
-
+                
         # This is a little indirect for efficiency...
         # Calculate means for columns of effects and sample membership, then calculate
-        # covariance as inner products. 
+        # covariance as inner products (but not all at once b/c of memory consumption)
         mean_effects = effects_matrix.mean(0)
         mean_membership = self.sampleMembership.mean(0)
-        centered_effects = (effects_matrix - mean_effects) 
+        centered_effects = (effects_matrix - mean_effects)
+        centered_effects = centered_effects.transpose()
         centered_membership = self.sampleMembership - mean_membership 
-        covariances = np.dot(centered_effects.transpose(), centered_membership) / (n_estimators - 1)
 
-        # Now square the covariances and sum across the rows
-        sq_covariances = covariances * covariances
+        # We want to avoid storing covariances matrix b/c it can get very large...
+        # Not sure if there is a good way to do this, so let's try a couple things.
         s = self.subsample_size
-        finite_sample_correction = ((n_samples-1)*n_samples) / ((n_samples-s)*(n_samples-s)) 
-        retval = np.sum(sq_covariances, axis=1) * finite_sample_correction
+        print s
+        print self.n_samples
+        print n_samples
+        finite_sample_correction = ((self.n_samples-1)*self.n_samples) / ((self.n_samples-s)**2)
+        retval = np.zeros(n_samples)
+        for i in range(0, n_samples) :
+            covariances = np.dot(centered_effects[i,:], centered_membership) / (n_estimators - 1)
+            covariances = covariances**2
+            retval[i] = np.sum(covariances) * finite_sample_correction
+
         return retval
 
     def predict_outcomes(self, X) : 
@@ -2365,7 +2374,8 @@ class DoubleSampleForest(ForestClassifier):
             X.sort_indices()
 
         # Remap output
-        n_samples, self.n_features_ = X.shape
+        self.n_samples, self.n_features_ = X.shape
+        n_samples = self.n_samples
 
         # Set subsample_size
         if subsample_size == None :
@@ -2502,22 +2512,26 @@ class DoubleSampleForest(ForestClassifier):
         for i in range(0, n_estimators) : 
             for j in range(0, n_samples) :
                 effects_matrix[i,j] = all_effects[i][j]
-
+                
         # This is a little indirect for efficiency...
         # Calculate means for columns of effects and sample membership, then calculate
-        # covariance as inner products.
-        # Check to see if we are getting the right dimensions for everything... 
+        # covariance as inner products (but not all at once b/c of memory consumption)
         mean_effects = effects_matrix.mean(0)
         mean_membership = self.sampleMembership.mean(0)
-        centered_effects = (effects_matrix - mean_effects) 
+        centered_effects = (effects_matrix - mean_effects)
+        centered_effects = centered_effects.transpose()
         centered_membership = self.sampleMembership - mean_membership 
-        covariances = np.dot(centered_effects.transpose(), centered_membership) / (n_estimators - 1)
 
-        # Now square the covariances and sum across the rows
-        sq_covariances = covariances * covariances
+        # We want to avoid storing covariances matrix b/c it can get very large...
+        # Not sure if there is a good way to do this, so let's try a couple things.
         s = self.subsample_size
-        finite_sample_correction = ((n_samples-1)*n_samples) / ((n_samples-s)**2)
-        retval = np.sum(sq_covariances, axis=1) * finite_sample_correction
+        finite_sample_correction = ((self.n_samples-1)*self.n_samples) / ((self.n_samples-s)**2)
+        retval = np.zeros(n_samples)
+        for i in range(0, n_samples) :
+            covariances = np.dot(centered_effects[i,:], centered_membership) / (n_estimators - 1)
+            covariances = covariances**2
+            retval[i] = np.sum(covariances) * finite_sample_correction
+
         return retval
         
     def predict_outcomes(self, X) : 
